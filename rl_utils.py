@@ -66,6 +66,9 @@ def plot_return(return_list):
     plt.show()
 
 
+x = 8
+print(np.log2(x))
+
 test = np.array([10, 20] * 4)
 position = test.reshape(4, 2)
 position[0] = [16, 18]

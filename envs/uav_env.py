@@ -2,23 +2,30 @@ import gym
 from gym import spaces
 import numpy as np
 
-from ..connection_schedule import connection_schedule
+from multi_UAV.connection_schedule import connection_schedule
 
 
 # TODO 所有参数默认值记得修改
 class Uav:
-    def __init__(self, max_angle=np.pi * 2, max_speed=10):
+    def __init__(self, cycle_bit, max_angle=np.pi * 2, max_speed=10, cmax=2,
+                 fmax=1):
         self.max_angle = max_angle
         self.max_speed = max_speed
+        self.cycle_bit = cycle_bit
+        self.max_connection = cmax
+        self.fmax = fmax
 
 
 class Iotd:
-    def __init__(self, data_size, tolerable_delay, capacitance_coef=0.2, cycle_bit=1, frequency=1):
+    def __init__(self, transmit_power, tolerable_delay, capacitance_coef=0.2, cycle_bit=1,
+                 frequency_local=1, frequency_alloc=1):
         self.capacitance_coef = capacitance_coef  # 有效电容系数
         self.cycle_bit = cycle_bit
-        self.frequency = frequency
-        self.compute_task = []
-        # self.data_size = data_size   # 单位为bit
+        self.frequency_local = frequency_local
+        self.frequency_alloc = frequency_alloc
+        self.compute_task = []  # 保存每个时隙的任务大小 单位为bit
+        self.transmit_power = transmit_power
+
         # self.tolerate_delay = tolerable_delay   # 单位s
 
 
@@ -26,7 +33,8 @@ class UAVEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, area_size_x, area_size_y, num_uavs=4, num_iotds=10, max_speed=10, max_angle=np.pi * 2, time_slot=1):
+    def __init__(self, area_size_x, area_size_y, num_uavs=4, num_iotds=10, max_speed=10,
+                 max_angle=np.pi * 2, time_slot_size=1):
         super(UAVEnv, self).__init__()
 
         self.uav = Uav(max_angle, max_speed)
@@ -36,7 +44,7 @@ class UAVEnv(gym.Env):
         self.nums_iotds = num_iotds
         self.area_size_x = area_size_x
         self.area_size_y = area_size_y
-        self.time_slot = time_slot
+        self.time_slot_size = time_slot_size
 
         # 状态空间: 每个UAV的位置 (x, y)
         self.observation_space = spaces.Box(
@@ -82,7 +90,7 @@ class UAVEnv(gym.Env):
         self.state = self._update_state(action)
 
         # 计算奖励函数
-        reward = self._calculate_reward()
+        reward = self._calculate_reward(self.time_step)
 
         # 检查是否完成
         done = self.time_step >= self.max_time_steps
@@ -112,15 +120,15 @@ class UAVEnv(gym.Env):
             dy = delta_v * np.cos(delta_theta)
 
             # 更新UAV的位置
-            # TODO 此处直接裁剪避免了不会uav越界 是否需要给其负奖励限制
-            new_x = np.clip(x + dx * self.time_slot, 0, self.area_size_x)
-            new_y = np.clip(y + dy * self.time_slot, 0, self.area_size_y)
+            # TODO 此处直接裁剪保证uav不会越界 是否需要给其负奖励限制
+            new_x = np.clip(x + dx * self.time_slot_size, 0, self.area_size_x)
+            new_y = np.clip(y + dy * self.time_slot_size, 0, self.area_size_y)
             positions[i] = [new_x, new_y]
 
         # 返回更新后的状态[展平后的格式]
         return positions.flatten()
 
-    def _calculate_reward(self):
+    def _calculate_reward(self, t):
         # 这里计算奖励函数 r_t = -Σ Σ ψ_k,n(t) - p(t)
         # ψ_k,n(t) 表示第k个设备在时隙t内完成任务的的成本
         # p(t) 是违反约束的惩罚项
@@ -131,11 +139,28 @@ class UAVEnv(gym.Env):
 
         for n in range(self.num_uavs):
             for k in range(self.nums_iotds):
-
+                Tcomk_t = self.iotd.cycle_bit * self.iotd.compute_task[t] / self.iotd.frequency_local  # 本地计算时间
+                Ecomk_t = Tcomk_t * self.iotd.capacitance_coef * self.iotd.frequency_local ** 3  # 本地能量消耗
                 # local_cost = Pk * (Ecom[k, t] + Tcom[k, t])
-                local_cost = 0
+                local_cost = self.iotd_dop[k] * (Tcomk_t + Ecomk_t)
+
+                path_loss = 1
+                multipath_fade = 1
+                misalignment_fade = 1
+                hk_n = path_loss * multipath_fade * misalignment_fade  # 信道增益
+
+                gaussian_noise = 1
+                rk_n = self.iotd.transmit_power * hk_n / gaussian_noise  # 信噪比
+
+                B = 1
+                Rk_n = B * np.log2(1 + rk_n)  # 卸载率
+
+                Toffk_n = self.iotd.compute_task[k] / Rk_n  # 卸载时间
+                Eoffk_n = Toffk_n * self.iotd.transmit_power  # 卸载能量
+                Tcomk_n = self.uav.cycle_bit * self.iotd.compute_task[t] / self.iotd.frequency_alloc  # uav计算时间
+                off_cost = Eoffk_n + Toffk_n + Tcomk_n
                 # off_cost = Eoff[k, n, t] + Toff[k, n, t] + Tcom[k, n, t]
-                off_cost = 0
+
                 # cost =
                 cost += cs[k, 0] * local_cost + cs[k, n] * off_cost
 
