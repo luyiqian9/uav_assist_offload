@@ -3,32 +3,11 @@ from gym import spaces
 import numpy as np
 
 from multi_UAV.connection_schedule import connection_schedule
+from multi_UAV.uav import Uav
+from multi_UAV.iotd import Iotd
 
 
 # TODO 所有参数默认值记得修改
-class Uav:
-    def __init__(self, cycle_bit, max_angle=np.pi * 2, max_speed=10, cmax=2,
-                 fmax=1):
-        self.max_angle = max_angle
-        self.max_speed = max_speed
-        self.cycle_bit = cycle_bit
-        self.max_connection = cmax
-        self.fmax = fmax
-
-
-class Iotd:
-    def __init__(self, transmit_power, tolerable_delay, capacitance_coef=0.2, cycle_bit=1,
-                 frequency_local=1, frequency_alloc=1):
-        self.capacitance_coef = capacitance_coef  # 有效电容系数
-        self.cycle_bit = cycle_bit
-        self.frequency_local = frequency_local
-        self.frequency_alloc = frequency_alloc
-        self.compute_task = []  # 保存每个时隙的任务大小 单位为bit
-        self.transmit_power = transmit_power
-
-        # self.tolerate_delay = tolerable_delay   # 单位s
-
-
 class UAVEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
@@ -38,7 +17,7 @@ class UAVEnv(gym.Env):
         super(UAVEnv, self).__init__()
 
         self.uav = Uav(max_angle, max_speed)
-        self.iotd = Iotd()
+        self.iotds: list[Iotd] = []
 
         self.num_uavs = num_uavs
         self.nums_iotds = num_iotds
@@ -48,8 +27,8 @@ class UAVEnv(gym.Env):
 
         # 状态空间: 每个UAV的位置 (x, y)
         self.observation_space = spaces.Box(
-            low=np.array([0, 0] * num_uavs),  # 每个UAV的x和y坐标最小为0
-            high=np.array([area_size_x, area_size_y] * num_uavs),
+            low=np.array([0, 0] * num_uavs).astype(np.float32),  # 每个UAV的x和y坐标最小为0
+            high=np.array([area_size_x, area_size_y] * num_uavs).astype(np.float32),
             # 每个UAV的x坐标最大为area_size_x，y坐标最大为area_size_y
             dtype=np.float32
         )
@@ -57,15 +36,14 @@ class UAVEnv(gym.Env):
         # 动作空间: 每个UAV的角度增量 Δθ 和速度增量 Δv
         # 每个UAV的角度Δθ范围为[0, 2π] 速度Δv范围为[0, max_speed]
         self.action_space = spaces.Box(
-            low=np.array([0, 0] * self.num_uavs),  # 角度和速度的下限
-            high=np.array([self.uav.max_angle, self.uav.max_speed] * self.num_uavs),  # uav角度和速度的上限
+            low=np.array([0, 0] * self.num_uavs).astype(np.float32),  # 角度和速度的下限
+            high=np.array([self.uav.max_angle, self.uav.max_speed] * self.num_uavs).astype(np.float32),  # uav角度和速度的上限
             dtype=np.float32
         )
 
         # 初始化UAV的位置 (x, y) 和速度 (默认初始速度为0)
         self.state = self._initialize_state()
         self.iotd_positions = []
-        self.iotd_dop = []
 
         # 其他参数
         self.time_step = 0
@@ -75,12 +53,18 @@ class UAVEnv(gym.Env):
         # 初始化每个UAV的(x, y)位置在限定范围中
         # 状态空间为[x1, y1, x2, y2, ..., xn, yn]
         # 顺序为 左上[x1]  右上[x2]  左下[x3]  右下[x4]
-        uav_positions = np.array([25, 375, 375, 375, 25, 25, 375, 25])
-        # 初始化设备位置 K = 10
+        uav_positions = np.array([25, 375, 375, 375, 25, 25, 375, 25], dtype=np.float32)
+
+        # 初始化全部设备 设备位置 每个iotd的dop K = 10
         self.iotd_positions = [(10, 10), (20, 15), (30, 40), (15, 10), (50, 50), (60, 40), (70, 80), (90, 100), (25, 35),
                           (45, 55)]
-        # 随机初始化每个iotd的dop
-        self.iotd_dop = np.random.randint(1, 55, self.nums_iotds).tolist()
+        iotd_dops = np.random.randint(1, 55, self.nums_iotds).tolist()
+
+        for i in range(self.nums_iotds):
+            ins = Iotd()
+            # ins.position = iotd_positions[i]
+            ins.dop = iotd_dops[i]
+            self.iotds.append(ins)
 
         return uav_positions
 
@@ -108,23 +92,8 @@ class UAVEnv(gym.Env):
         actions = action.reshape(self.num_uavs, 2)
 
         # 计算新的位置
-        for i in range(self.num_uavs):
-            delta_theta, delta_v = actions[i]
-
-            # 当前UAV的x和y坐标
-            x, y = positions[i]
-
-            # 计算速度方向上的增量 (cos(θ), sin(θ))
-            # TODO
-            dx = delta_v * np.sin(delta_theta)
-            dy = delta_v * np.cos(delta_theta)
-
-            # 更新UAV的位置
-            # TODO 此处直接裁剪保证uav不会越界 是否需要给其负奖励限制
-            new_x = np.clip(x + dx * self.time_slot_size, 0, self.area_size_x)
-            new_y = np.clip(y + dy * self.time_slot_size, 0, self.area_size_y)
-            positions[i] = [new_x, new_y]
-
+        positions: np.ndarray = self.uav.calculate_new_position(self.num_uavs, actions, positions, self.time_slot_size,
+                                                    self.area_size_x, self.area_size_y)
         # 返回更新后的状态[展平后的格式]
         return positions.flatten()
 
@@ -139,25 +108,37 @@ class UAVEnv(gym.Env):
 
         for n in range(self.num_uavs):
             for k in range(self.nums_iotds):
-                Tcomk_t = self.iotd.cycle_bit * self.iotd.compute_task[t] / self.iotd.frequency_local  # 本地计算时间
-                Ecomk_t = Tcomk_t * self.iotd.capacitance_coef * self.iotd.frequency_local ** 3  # 本地能量消耗
+                iotd = self.iotds[k]
+                Tcomk_t = iotd.cycle_bit * iotd.compute_task[t] / iotd.frequency_local  # 本地计算时间
+                Ecomk_t = Tcomk_t * iotd.capacitance_coef * iotd.frequency_local ** 3  # 本地能量消耗
                 # local_cost = Pk * (Ecom[k, t] + Tcom[k, t])
-                local_cost = self.iotd_dop[k] * (Tcomk_t + Ecomk_t)
+                local_cost = iotd.dop * (Ecomk_t + Tcomk_t)
 
-                path_loss = 1
+                # 在5G通信中，常用频段包括28 GHz和39 GHz
+                c, gt, gr, f, h, ka_f = 3e8, 1, 1, 28, 5, 1
+                # TODO 到时候迁移到moc中 可能对当前uav的state会有影响 也就是uav的位置是不是实时在环境中更新 or 何处更新
+                dgi_u = np.linalg.norm(np.array(iotd.position) - np.array(self.state.reshape(self.num_uavs, 2)[n]))
+                di_u = np.sqrt(dgi_u ** 2 + h ** 2)
+                propagation_loss = c * np.sqrt(gt * gr) / (4 * np.pi * f * di_u)
+                molecular_absorption = np.exp(-0.5 * ka_f * di_u)
+                # hk_n_l_t
+                path_loss = propagation_loss * molecular_absorption
+
+                # 还没仔细研究计算公式
                 multipath_fade = 1
                 misalignment_fade = 1
+
                 hk_n = path_loss * multipath_fade * misalignment_fade  # 信道增益
 
                 gaussian_noise = 1
-                rk_n = self.iotd.transmit_power * hk_n / gaussian_noise  # 信噪比
+                rk_n = iotd.transmit_power * hk_n / gaussian_noise  # 信噪比
 
                 B = 1
                 Rk_n = B * np.log2(1 + rk_n)  # 卸载率
 
-                Toffk_n = self.iotd.compute_task[k] / Rk_n  # 卸载时间
-                Eoffk_n = Toffk_n * self.iotd.transmit_power  # 卸载能量
-                Tcomk_n = self.uav.cycle_bit * self.iotd.compute_task[t] / self.iotd.frequency_alloc  # uav计算时间
+                Toffk_n = iotd.compute_task[t] / Rk_n  # 卸载时间
+                Eoffk_n = Toffk_n * iotd.transmit_power  # 卸载能量
+                Tcomk_n = self.uav.cycle_bit * iotd.compute_task[t] / iotd.frequency_alloc  # uav计算时间
                 off_cost = Eoffk_n + Toffk_n + Tcomk_n
                 # off_cost = Eoff[k, n, t] + Toff[k, n, t] + Tcom[k, n, t]
 
@@ -171,12 +152,23 @@ class UAVEnv(gym.Env):
         reward = -(cost + penalty)
         return reward
 
-    def reset(self):
+    def reset(self, **kwargs):
         # 重置环境到初始状态
         self.state = self._initialize_state()
         self.time_step = 0
-        return self.state
+        return self.state, {}
 
     def render(self, mode='human', close=False):
         # 可视化环境状态，例如显示UAV的位置等
         pass
+
+
+this = UAVEnv(400, 400)
+this._initialize_state()
+
+print(this._update_state(np.random.randint(1, 5, 8)))
+
+# iotds = this.iotds
+# for i in range(this.nums_iotds):
+#     print(iotds[i].dop)
+#     print(iotds[i].position)
