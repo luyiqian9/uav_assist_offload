@@ -86,13 +86,13 @@ def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
 
 if __name__ == '__main__':
     K = 10  # 10个IoTD
-    N = 3  # 3个UAV
+    N = 4  # 3个UAV
 
     ci, MI, LU = initialize(K, N)
 
     iotd_positions = [(10, 10), (20, 15), (30, 40), (15, 10), (50, 50), (60, 40), (70, 80), (90, 100), (25, 35),
                       (45, 55)]
-    uav_positions = [(20, 20), (60, 60), (90, 90)]
+    uav_positions = [(20, 20), (60, 60), (90, 90), (45, 45)]
     dlink = 50  # 通信链路最大距离
     Cmax = 3  # 每个UAV的最大连接容量
 

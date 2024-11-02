@@ -12,7 +12,7 @@ class UAVEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, area_size_x, area_size_y, num_uavs=4, num_iotds=10, max_speed=10,
+    def __init__(self, area_size_x=400, area_size_y=400, num_uavs=4, num_iotds=10, max_speed=10,
                  max_angle=np.pi * 2, time_slot_size=1):
         super(UAVEnv, self).__init__()
 
@@ -77,12 +77,11 @@ class UAVEnv(gym.Env):
         reward = self._calculate_reward(self.time_step)
 
         # 检查是否完成
-        done = self.time_step >= self.max_time_steps
-
+        # done = self.time_step >= self.max_time_steps
         # 递增时间步
-        self.time_step += 1
+        # self.time_step += 1
 
-        return self.state, reward, done, {}
+        return self.state, reward, {}
 
     def _update_state(self, action):
         # 当前状态：每个UAV的位置 [x1, y1, x2, y2, ..., xn, yn]
@@ -115,7 +114,7 @@ class UAVEnv(gym.Env):
                 local_cost = iotd.dop * (Ecomk_t + Tcomk_t)
 
                 # 在5G通信中，常用频段包括28 GHz和39 GHz
-                c, gt, gr, f, h, ka_f = 3e8, 1, 1, 28, 5, 1
+                c, gt, gr, f, h, ka_f = 3e8, 55, 55, 60, 100, 1
                 # TODO 到时候迁移到moc中 可能对当前uav的state会有影响 也就是uav的位置是不是实时在环境中更新 or 何处更新
                 dgi_u = np.linalg.norm(np.array(iotd.position) - np.array(self.state.reshape(self.num_uavs, 2)[n]))
                 di_u = np.sqrt(dgi_u ** 2 + h ** 2)
@@ -133,7 +132,7 @@ class UAVEnv(gym.Env):
                 gaussian_noise = 1
                 rk_n = iotd.transmit_power * hk_n / gaussian_noise  # 信噪比
 
-                B = 1
+                B = 10
                 Rk_n = B * np.log2(1 + rk_n)  # 卸载率
 
                 Toffk_n = iotd.compute_task[t] / Rk_n  # 卸载时间
@@ -163,11 +162,14 @@ class UAVEnv(gym.Env):
         pass
 
 
-this = UAVEnv(400, 400)
-this._initialize_state()
+this = UAVEnv()
+print(this.observation_space.shape[0])
+print(this.action_space.shape)
+print(this.action_space.high[0])
 
-print(this._update_state(np.random.randint(1, 5, 8)))
-
+# this._initialize_state()
+#
+# print(this._update_state(np.random.randint(1, 5, 8)))
 # iotds = this.iotds
 # for i in range(this.nums_iotds):
 #     print(iotds[i].dop)

@@ -1,5 +1,5 @@
 class Iotd:
-    def __init__(self, dop=0, transmit_power=1, capacitance_coef=0.2, cycle_bit=1,
+    def __init__(self, dop=0, transmit_power=0.1, capacitance_coef=1e-28, cycle_bit=1,
                  frequency_local=1, frequency_alloc=1):
         self.capacitance_coef = capacitance_coef  # 有效电容系数
         self.cycle_bit = cycle_bit

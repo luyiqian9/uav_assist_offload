@@ -1,50 +1,52 @@
-import gym  # 导入OpenAI Gym库，用于构建和管理环境
-from agent import SACAgent
 from envs.uav_env import UAVEnv
+from agent import SACAgent
 
-import numpy as np
-from tqdm import tqdm  # 导入进度条模块，用于显示进度
-import torch  # 导入PyTorch库，用于构建和训练神经网络
-import torch.nn.functional as F  # 导入PyTorch中的功能模块
-from torch.distributions import Normal  # 导入正态分布类
-import matplotlib.pyplot as plt  # 导入Matplotlib库，用于绘图
+import torch
 
-""" 
-    先得make一个环境出来 
-"""
-# 注册环境
-gym.envs.register(
-    id='UAVEnv-v0',
-    entry_point='envs.uav_env:UAVEnv',
-)
+# 环境和智能体初始化
+env = UAVEnv()
 
-""" 
-    超参数设置
-"""
-
-""" 
-    写训练逻辑
-"""
-# 初始化环境和智能体
-env = UAVEnv(400, 400)
 state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
-agent = SACAgent(state_dim, action_dim)
+action_bound = torch.tensor(env.action_space.high, dtype=torch.float32)
+print("action_bound = ", end="")
+print(action_bound)
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+agent = SACAgent(state_dim=state_dim, action_dim=action_dim, action_bound=action_bound, device=device)
 
-# 训练智能体
-state = env.reset()
-done = False
-while not done:
-    action = agent.select_action(state)
-    next_state, reward, done, _ = env.step(action)
-    agent.replay_buffer.add((state, action, reward, next_state))
-    state = next_state
+# 主训练循环
+episodes = 1000
+for episode in range(episodes):
+    state, addition = env.reset()
+    print("state = ", end="")
+    print(state)
+    episode_reward = 0
 
-    # 每一步都更新智能体
-    agent.update(batch_size=64)
+    time_step = 15
+    for t in range(time_step):
+        # 智能体选择动作
+        action = agent.select_action(state)
+        print("action = ", end="")
+        print(action)
+
+        # 环境执行动作，完成连接调度、资源分配和奖励计算
+        next_state, reward, _ = env.step(action)
+        print(_)
+
+        # 将经验存储到经验池中
+        agent.replay_buffer.add((state, action, reward, next_state))
+        state = next_state
+        episode_reward += reward
+
+        # TODO 若达到mini_batch 则开始更新策略
+        agent.update(batch_size=64)
+
+    print(f"Episode {episode}, Reward: {episode_reward}")
 
 
 """ 
-    绘制训练回报
+    1.超参数设置
+    2.写训练逻辑
+    3.绘制训练回报
 """
 

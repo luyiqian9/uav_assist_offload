@@ -2,8 +2,8 @@ import numpy as np
 
 
 class Uav:
-    def __init__(self, cycle_bit, max_angle=np.pi * 2, max_speed=10, cmax=2,
-                 fmax=1):
+    def __init__(self, cycle_bit, max_angle=np.pi * 2, max_speed=15, cmax=2,
+                 fmax=100):
         self.max_angle = max_angle
         self.max_speed = max_speed
         self.cycle_bit = cycle_bit
