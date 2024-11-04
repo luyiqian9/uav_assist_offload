@@ -29,6 +29,9 @@ def pop_low_priority(l):
 # 连接调度算法
 def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
 
+    global ci, MI, LU
+    ci, MI, LU = initialize(K, N)
+
     # ci 二维数组 记录每个iotd的连接状态
     # MI 记录未确定连接的iotd
     # LU 记录每个uav当前的连接任务列表
@@ -39,6 +42,7 @@ def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
 
         # 遍历每个UAV
         for j in range(1, N + 1):
+            # print(str(i) + " " + str(j - 1))
             dGi_j = calculate_distance(iotd_positions[i], uav_positions[j - 1])
 
             # 如果距离小于通信阈值，将该UAV加入候选列表
@@ -88,8 +92,6 @@ if __name__ == '__main__':
     K = 10  # 10个IoTD
     N = 4  # 3个UAV
 
-    ci, MI, LU = initialize(K, N)
-
     iotd_positions = [(10, 10), (20, 15), (30, 40), (15, 10), (50, 50), (60, 40), (70, 80), (90, 100), (25, 35),
                       (45, 55)]
     uav_positions = [(20, 20), (60, 60), (90, 90), (45, 45)]
@@ -101,5 +103,5 @@ if __name__ == '__main__':
 
     for i in range(len(ci)):
         for j in range(len(ci[i])):
-            print(ci[i][j], end=" ")
+            print(ci[i, j], end=" ")
         print()

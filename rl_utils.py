@@ -10,10 +10,14 @@ def plot_return(return_list):
     plt.show()
 
 
-iotd_pos = (1, 1)
-uav_pos = (2, 2)
-print(np.linalg.norm(np.array(iotd_pos) - np.array(uav_pos)))
-print(np.exp(0))
+# iotd_pos = np.array([1, 1], dtype=np.float32)
+# uav_pos = np.array([2, 2], dtype=np.float32)
+# iotd_pos = iotd_pos.reshape(1, 2)
+# uav_pos = uav_pos.reshape(1, 2)
+# print(np.linalg.norm(np.array(iotd_pos) - np.array(uav_pos)))
+# print(np.exp(0))
+
+print(np.cbrt(7))
 # test = np.array([10, 20] * 4)
 # position = test.reshape(4, 2)
 # position[0] = [16, 18]

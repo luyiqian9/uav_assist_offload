@@ -3,12 +3,12 @@ import numpy as np
 
 class Uav:
     def __init__(self, cycle_bit, max_angle=np.pi * 2, max_speed=15, cmax=2,
-                 fmax=100):
+                 fnmax=100):
         self.max_angle = max_angle
         self.max_speed = max_speed
         self.cycle_bit = cycle_bit
         self.max_connection = cmax
-        self.fmax = fmax
+        self.fnmax = fnmax
 
     def calculate_new_position(self, num_uavs, actions, positions, time_slot_size, area_size_x, area_size_y):
         for i in range(num_uavs):

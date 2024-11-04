@@ -1,3 +1,5 @@
+import collections
+
 import torch
 import torch.nn.functional as F
 from torch.distributions import Normal
@@ -21,7 +23,7 @@ class Actor(nn.Module):
 
     def forward(self, state):
         # 依次通过三层隐藏层并使用 ReLU 激活函数
-        state = state.unsqueeze(0)   # 将 (8,) 变成 (1, 8) 即(batch_size, state_dim)
+        # state = state.unsqueeze(0)   # 将 (8,) 变成 (1, 8) 即(batch_size, state_dim)
 
         x = F.relu(self.fc1(state))  # 第一个隐藏层 (输入 -> 800)
         x = F.relu(self.fc2(x))  # 第二个隐藏层 (800 -> 600)
@@ -33,7 +35,7 @@ class Actor(nn.Module):
 
         # 正态分布采样和计算 log 概率
         dist = Normal(mu, std)  # 创建正态分布的实例 distribution
-        normal_sample = dist.rsample()  # 重参数化采样
+        normal_sample = dist.rsample()  # 重参数化采样 确保梯度可以反传
         log_prob = dist.log_prob(normal_sample)  # 计算sample的对数概率密度
         action = torch.tanh(normal_sample)
 
@@ -73,22 +75,20 @@ class Critic(nn.Module):
 
 # 经验回放缓冲区，用于存储状态、动作、奖励和下一个状态
 class ReplayBuffer:
-    def __init__(self, max_size):
-        self.buffer = []                  # 缓冲区初始化为空列表
-        self.max_size = max_size          # 最大缓冲区大小
-        self.ptr = 0                      # 指针，用于循环替换
+    def __init__(self, capacity):
+        self.buffer = collections.deque(maxlen=capacity)  # 缓冲区初始化为空列表
 
-    def add(self, experience):
-        if len(self.buffer) < self.max_size:
-            self.buffer.append(experience)    # 如果未达到最大容量，则添加新经验
-        else:
-            self.buffer[self.ptr] = experience # 达到最大容量时，替换旧的经验
-            self.ptr = (self.ptr + 1) % self.max_size # 更新指针
+    def add(self, state, action, reward, next_state):
+        self.buffer.append((state, action, reward, next_state))  # 如果未达到最大容量，则添加新经验
 
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)         # 随机抽取批次样本
-        states, actions, rewards, next_states = zip(*batch)    # 分别提取状态、动作、奖励和下一个状态
-        return (np.array(states), np.array(actions), np.array(rewards), np.array(next_states))
+        batch = random.sample(self.buffer, batch_size)         # 随机抽取批次个样本元组
+        # 将batch列表解压生成多个元组列表 每个元组的第一个元素打包成state 第二个元素打包成action 依此类推
+        states, actions, rewards, next_states = zip(*batch)
+        return np.array(states), np.array(actions), np.array(rewards), np.array(next_states)
+
+    def size(self):
+        return len(self.buffer)
 
 
 # SAC 智能体定义，包含 Actor 和 Critic 网络
@@ -115,13 +115,13 @@ class SACAgent:
         self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=lr_c)  # Q1 网络的优化器
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr_c)  # Q2 网络的优化器
 
-        # 使用alpha的log值,可以使训练结果比较稳定
-        self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float32)
-        self.log_alpha.requires_grad = True
-        self.log_alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
+        # 使用alpha的log值,可以使训练结果比较稳定    α【熵的温度参数】
+        self.log_alpha = torch.tensor(np.log(0.01), dtype=torch.float32)  # 定义一个PyTorch张量 进一步用于梯度优化
+        self.log_alpha.requires_grad = True  # 使log_alpha在优化步骤中参与参数更新 这对于通过梯度下降方法优化log_alpha很重要
+        self.log_alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)  # 定义优化器优化 alpha
 
         self.target_entropy = -8  # 目标熵的大小
-        self.gamma = 0.99         # discount rate ???
+        self.gamma = 0.99         # discount rate
         self.tau = 0.005          # 软更新参数
         self.device = device
 
@@ -129,58 +129,81 @@ class SACAgent:
         self.replay_buffer = ReplayBuffer(buffer_size)  # 初始化经验回放池
 
     def select_action(self, state):
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)  # 将状态转换为张量，并添加批次维度
-        action = self.actor(state_tensor).detach().numpy()[0]  # 使用策略网络生成动作，并转换为 numpy 数组
+        # 将状态转换为张量，并添加批次维度 即(1, state_dim) 便于适配学习模型
+        state = torch.tensor([state], dtype=torch.float32).to(self.device)
+
+        action = self.actor(state)[0]  # 使用策略网络生成动作，并转换为 numpy 数组
+        action = action.detach().cpu().numpy()   # 将 action 转成 numpy 数组，方便后续与 NumPy 库进行兼容的操作
+        # print(f"selected action = {action}")
         return action
 
-    def _soft_update(self, target, source, tau):
+    def calc_target(self, rewards, next_states, dones):  # 计算目标Q值
+        next_actions, log_prob = self.actor(next_states)
+
+        # 计算策略熵，用于增强策略的探索性
+        entropy = -log_prob
+
+        # 选择两个 Q 值中的较小值，符合双 Q 学习的策略，避免过高估计
+        q1_value = self.target_critic1(next_states, next_actions)
+        q2_value = self.target_critic2(next_states, next_actions)
+        next_value = torch.min(q1_value,
+                               q2_value) + self.log_alpha.exp() * entropy
+
+        # 计算目标 TD 值：reward + γ * (未来状态的值) * (1 - done)
+        td_target = rewards + self.gamma * next_value * (1 - dones)
+
+        return td_target
+
+    # theta_target  <--- (1 - tau) * theta_target + tau * theta_main
+    def _soft_update(self, net, target_net):
         # 使用软更新公式更新目标网络
-        for target_param, param in zip(target.parameters(), source.parameters()):
-            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+        for param_target, param in zip(target_net.parameters(), net.parameters()):
+            param_target.data.copy_(
+                param_target.data * (1.0 - self.tau) + param.data * self.tau
+            )
 
-    def update(self, batch_size, gamma=0.99, tau=0.005):
-        if len(self.replay_buffer.buffer) < batch_size:
-            return  # 如果经验池中数据不足，跳过更新
-
-        # 从经验池中采样
-        states, actions, rewards, next_states = self.replay_buffer.sample(batch_size)
-
+    # TODO 1.归一化    2.Cn、Ck    3.td_target
+    def update(self, transition_dict):
         # 将数据转换为张量
-        states = torch.FloatTensor(states)
-        actions = torch.FloatTensor(actions)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1)  # 奖励需要增加一个维度
-        next_states = torch.FloatTensor(next_states)
+        states = torch.tensor(transition_dict['states'],
+                              dtype=torch.float).to(self.device)
+        actions = torch.tensor(transition_dict['actions'],
+                               dtype=torch.float).view(-1, 1).to(self.device)
+        rewards = torch.tensor(transition_dict['rewards'],
+                               dtype=torch.float).view(-1, 1).to(self.device)
+        next_states = torch.tensor(transition_dict['next_states'],
+                                   dtype=torch.float).to(self.device)
+        dones = torch.tensor(transition_dict['dones'],
+                             dtype=torch.float).view(-1, 1).to(self.device)
 
         # 计算目标 Q 值
-        with torch.no_grad():
-            next_actions = self.actor(next_states)               # 下一个状态的动作
-            target_q1 = self.target_critic1(next_states, next_actions)  # 第一个目标 Q 值
-            target_q2 = self.target_critic2(next_states, next_actions)  # 第二个目标 Q 值
-            target_q = torch.min(target_q1, target_q2)                 # 选择最小的 Q 值
-            yj = rewards + gamma * target_q                            # 计算目标值
+        td_target = self.calc_target(rewards, next_states, dones)
+
+        # with torch.no_grad():
+        #     yj = rewards + self.gamma * target_q   # 计算目标值
 
         # 更新 Critic 网络
         current_q1 = self.critic1(states, actions)                   # 当前 Q1 值
         current_q2 = self.critic2(states, actions)                   # 当前 Q2 值
-        critic_loss1 = nn.MSELoss()(current_q1, yj)                  # Q1 损失
-        critic_loss2 = nn.MSELoss()(current_q2, yj)                  # Q2 损失
+        critic_loss1 = nn.MSELoss()(current_q1, td_target)                  # Q1 损失
+        critic_loss2 = nn.MSELoss()(current_q2, td_target)                  # Q2 损失
 
         # 反向传播并更新 Critic 网络
-        self.critic_optimizer1.zero_grad()
-        self.critic_optimizer2.zero_grad()
+        self.critic1_optimizer.zero_grad()
+        self.critic2_optimizer.zero_grad()
         critic_loss1.backward()
         critic_loss2.backward()
-        self.critic_optimizer1.step()
-        self.critic_optimizer2.step()
+        self.critic1_optimizer.step()
+        self.critic2_optimizer.step()
 
         # 更新 Actor 网络
         new_actions = self.actor(states)                       # 新动作
-        actor_loss = -self.critic1(states, new_actions).mean() # 计算策略损失
+        actor_loss = -self.critic1(states, new_actions).mean()  # 计算策略损失
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()                                  # 反向传播
         self.actor_optimizer.step()                            # 更新策略网络参数
 
         # 软更新目标网络
-        self._soft_update(self.target_critic1, self.critic1, tau)
-        self._soft_update(self.target_critic2, self.critic2, tau)
+        self._soft_update(self.target_critic1, self.critic1, self.tau)
+        self._soft_update(self.target_critic2, self.critic2, self.tau)
