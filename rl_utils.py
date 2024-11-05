@@ -17,7 +17,7 @@ def plot_return(return_list):
 # print(np.linalg.norm(np.array(iotd_pos) - np.array(uav_pos)))
 # print(np.exp(0))
 
-print(np.cbrt(7))
+print(16 / 2 ** 2)
 # test = np.array([10, 20] * 4)
 # position = test.reshape(4, 2)
 # position[0] = [16, 18]

@@ -60,8 +60,9 @@ class Critic(nn.Module):
         self.fc_out = nn.Linear(400, 1)
 
     def forward(self, state, action):
-        state = state.unsqueeze(0)  # 将 (8,) 变成 (1, 8) 即(batch_size, state_dim)格式
-        action = action.unsqueeze(0)  # 将 (8,) 变成 (1, 8)
+        # 在 update 中使用时 已经转换过张量格式了
+        # state = state.unsqueeze(0)  # 将 (8,) 变成 (1, 8) 即(batch_size, state_dim)格式
+        # action = action.unsqueeze(0)  # 将 (8,) 变成 (1, 8)
         # 将状态和动作在维度1上拼接，形成联合输入
         cat = torch.cat([state, action], dim=1)
         # 通过全连接层并逐层进行ReLU激活
@@ -137,7 +138,8 @@ class SACAgent:
         # print(f"selected action = {action}")
         return action
 
-    def calc_target(self, rewards, next_states, dones):  # 计算目标Q值
+    # def calc_target(self, rewards, next_states, dones):  # 计算目标Q值
+    def calc_target(self, rewards, next_states):  # 计算目标Q值
         next_actions, log_prob = self.actor(next_states)
 
         # 计算策略熵，用于增强策略的探索性
@@ -150,7 +152,8 @@ class SACAgent:
                                q2_value) + self.log_alpha.exp() * entropy
 
         # 计算目标 TD 值：reward + γ * (未来状态的值) * (1 - done)
-        td_target = rewards + self.gamma * next_value * (1 - dones)
+        # td_target = rewards + self.gamma * next_value * (1 - dones)
+        td_target = rewards + self.gamma * next_value
 
         return td_target
 
@@ -162,48 +165,67 @@ class SACAgent:
                 param_target.data * (1.0 - self.tau) + param.data * self.tau
             )
 
-    # TODO 1.归一化    2.Cn、Ck    3.td_target
+    # TODO 1.归一化    2.td_target    4.penalty    5. dop数值
     def update(self, transition_dict):
-        # 将数据转换为张量
+        # 将数据转换为张量  view(-1, 1) 用于将张量调整为 (batch_size, 1) 的形状
         states = torch.tensor(transition_dict['states'],
-                              dtype=torch.float).to(self.device)
+                              dtype=torch.float32).to(self.device)
         actions = torch.tensor(transition_dict['actions'],
-                               dtype=torch.float).view(-1, 1).to(self.device)
+                               dtype=torch.float32).view(-1, 1).to(self.device)
         rewards = torch.tensor(transition_dict['rewards'],
-                               dtype=torch.float).view(-1, 1).to(self.device)
+                               dtype=torch.float32).view(-1, 1).to(self.device)
         next_states = torch.tensor(transition_dict['next_states'],
-                                   dtype=torch.float).to(self.device)
-        dones = torch.tensor(transition_dict['dones'],
-                             dtype=torch.float).view(-1, 1).to(self.device)
+                                   dtype=torch.float32).to(self.device)
+        # dones = torch.tensor(transition_dict['dones'],
+        #                      dtype=torch.float32).view(-1, 1).to(self.device)
 
-        # 计算目标 Q 值
-        td_target = self.calc_target(rewards, next_states, dones)
+        # 计算目标Q值(td_target) 和 预测Q值 之间的损失  然后根据损失来更新网络参数
+        # td_target = self.calc_target(rewards, next_states, dones)
+        td_target = self.calc_target(rewards, next_states)
 
-        # with torch.no_grad():
-        #     yj = rewards + self.gamma * target_q   # 计算目标值
-
-        # 更新 Critic 网络
-        current_q1 = self.critic1(states, actions)                   # 当前 Q1 值
-        current_q2 = self.critic2(states, actions)                   # 当前 Q2 值
-        critic_loss1 = nn.MSELoss()(current_q1, td_target)                  # Q1 损失
-        critic_loss2 = nn.MSELoss()(current_q2, td_target)                  # Q2 损失
+        current_q1 = self.critic1(states, actions)   # 计算当前状态和动作对应的 预测 Q1 值
+        current_q2 = self.critic2(states, actions)   # 预测 Q2 值 (batch_size, 1)
+        # mse 均方误差   torch.mean 求平均损失值
+        critic1_loss = torch.mean(
+            F.mse_loss(current_q1, td_target.detach())
+        )    # Q1 损失
+        critic2_loss = torch.mean(
+            F.mse_loss(current_q2, td_target.detach())
+        )    # Q2 损失
 
         # 反向传播并更新 Critic 网络
-        self.critic1_optimizer.zero_grad()
+        """
+        标量张量仍然与图中的参数关联 因此可以调用 backward()
+        critic2_loss 是torch.mean计算的标量值（一个单一的标量损失）尽管是标量值 它仍然可以用于反向传播
+        这是因为在 PyTorch 中，标量张量会默认与计算图中的参数关联，可以触发网络的梯度计算。
+        """
+        self.critic1_optimizer.zero_grad()   # 在反向传播前清除 网络 的梯度缓存，避免累积梯度影响更新
+        critic1_loss.backward()
+        self.critic1_optimizer.step()  # 使用计算得到的梯度更新 critic_1 的参数
         self.critic2_optimizer.zero_grad()
-        critic_loss1.backward()
-        critic_loss2.backward()
-        self.critic1_optimizer.step()
+        critic2_loss.backward()
         self.critic2_optimizer.step()
 
         # 更新 Actor 网络
-        new_actions = self.actor(states)                       # 新动作
-        actor_loss = -self.critic1(states, new_actions).mean()  # 计算策略损失
+        new_actions, log_prob = self.actor(states)    # 新动作
+        entropy = -log_prob
+        # new_actions = torch.tensor([new_actions], dtype=torch.float32)
+        q1_value = self.critic1(states, new_actions)
+        q2_value = self.critic2(states, new_actions)
+        actor_loss = torch.mean(-self.log_alpha.exp() * entropy -
+                                torch.min(q1_value, q2_value))
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()                                  # 反向传播
         self.actor_optimizer.step()                            # 更新策略网络参数
 
+        # 更新 alpha 值
+        alpha_loss = torch.mean(
+            (entropy - self.target_entropy).detach() * self.log_alpha.exp())
+        self.log_alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.log_alpha_optimizer.step()
+
         # 软更新目标网络
-        self._soft_update(self.target_critic1, self.critic1, self.tau)
-        self._soft_update(self.target_critic2, self.critic2, self.tau)
+        self._soft_update(self.critic1, self.target_critic1)
+        self._soft_update(self.critic2, self.target_critic2)

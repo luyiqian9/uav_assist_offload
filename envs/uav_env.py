@@ -28,7 +28,7 @@ class UAVEnv(gym.Env):
 
         # 其他参数
         self.time_step = 0
-        self.max_time_steps = 14
+        self.max_time_steps = 2
 
         # 状态空间: 每个UAV的位置 (x, y)
         self.observation_space = spaces.Box(
@@ -109,81 +109,70 @@ class UAVEnv(gym.Env):
         # p(t) 是违反约束的惩罚项
 
         # 计算cost
-        cost = 0
+        cost, local_cost, off_cost = 0, 0, 0
 
         uav_state = self.state.reshape(4, 2)
-        cs = connection_schedule(10, 4, self.iotd_positions, uav_state, 80, 4)  # 执行连接调度
+        cs = connection_schedule(10, 4, self.iotd_positions, uav_state, 100, 4, self.iotds, t)  # 执行连接调度
         # for i in range(len(cs)):
         #     for j in range(len(cs[i])):
         #         print(cs[i][j], end=" ")
         #     print()
 
-        for n in range(self.num_uavs):
-            for k in range(self.nums_iotds):
-                iotd = self.iotds[k]
+        for k in range(self.nums_iotds):
+            iotd = self.iotds[k]
+            n = 1  # 默认卸载到第一个 虽然理论上分析不会是默认值
 
+            if cs[k, 0] == 1:
                 """ 本地计算的总成本 """
                 Tcomk_t = iotd.get_t_star(t)  # 本地计算时间
                 Ecomk_t = Tcomk_t * iotd.capacitance_coef * iotd.frequency_local ** 3  # 本地能量消耗
                 # local_cost = Pk * (Ecom[k, t] + Tcom[k, t])
                 local_cost = iotd.dop * (Ecomk_t + Tcomk_t)
-                if not k:
-                    print(f"local_cost = {local_cost}")
-
-                """ 无人机辅助卸载的总成本 """  # ka_f
-                c, gt, gr, f, h, ka_f = 3e8, 55, 55, 60, 100, 1
-                # TODO 到时候迁移到moc中 可能对当前uav的state会有影响 也就是uav的位置是不是实时在环境中更新 or 何处更新
+                # if not k:
+                #     print(f"local_cost = {local_cost}")
+            else:
+                # 首先得找到当前设备卸载到了哪个uav
+                for j in range(1, self.num_uavs + 1):
+                    if cs[k, j] == 1:
+                        n = j
+                """ 无人机辅助卸载的总成本 """
+                h_0, h = 1e3, 100  # 距离为1m时的参考信道增益-30dB = 0.001， -50dB = 1e-5
                 uav_position = self.state.reshape(self.num_uavs, 2)[n]
                 iot_position = self.iotd_positions.reshape(self.nums_iotds, 2)[k]
-                # if not k:
-                #     print(f"uav pos: {uav_position}")
-                #     print(f"iotd pos: {iot_position}")
                 dgi_u = np.linalg.norm(np.array(iot_position) - np.array(uav_position))
                 di_u = np.sqrt(dgi_u ** 2 + h ** 2)
-                propagation_loss = c * np.sqrt(gt * gr) / (4 * np.pi * f * di_u)
-                molecular_absorption = np.exp(-0.5 * ka_f * di_u)
-                # hk_n_l_t
-                path_loss = propagation_loss * molecular_absorption
-
-                multipath_fading = 1
-
-                # 还没仔细研究计算公式
-                l, r, rm = 0.25, 0.35, 0.55
-                zeta = np.sqrt(np.pi) * r / np.sqrt(2) * rm
-                p0 = erf(zeta) ** 2
-                rq = np.sqrt(np.pi) * erf(zeta) * rm * rm / (2 * zeta * np.exp(-zeta * zeta))
-                misalignment_fade = p0 * np.exp((-2 * l * l) / (rq * rq))
-
-                hk_n = path_loss * multipath_fading * misalignment_fade  # 信道增益
+                hk_n = h_0 / di_u ** 2  # 传统信道增益公式
 
                 gaussian_noise = -90
                 rk_n = iotd.transmit_power * hk_n / gaussian_noise  # 信噪比
 
-                B = 10
+                B = 10 * 1e6
                 Rk_n = B * np.log2(1 + rk_n)  # 卸载率
-                if not k:
-                    print(f"Rk_n: {Rk_n}")
+                # if not n:
+                #     print(f"h_kn = {hk_n}")
+                #     print(f"rk_n = {rk_n}")
+                #     print(f"Rk_n: {Rk_n}")
 
                 Toffk_n = iotd.compute_task[t] / Rk_n  # 卸载时间
                 Eoffk_n = Toffk_n * iotd.transmit_power  # 卸载能量
                 # 连接调度中无人机编号为 1 2 3 4
-                connected_iotds = self.handler(cs, n + 1)
-                iotd.frequency_alloc = self.alloc_frequency(iotd, connected_iotds)
+                connected_iotds = self.handler(cs, n)
+                iotd.frequency_alloc = self.alloc_frequency(iotd, connected_iotds, t)
                 Tcomk_n = self.uav.cycle_bit * iotd.compute_task[t] / iotd.frequency_alloc  # uav计算时间
 
                 # off_cost = Eoff[k, n, t] + Toff[k, n, t] + Tcom[k, n, t]
                 off_cost = Eoffk_n + Toffk_n + Tcomk_n
 
-                """ 总成本 """
-                cost += cs[k, 0] * local_cost + cs[k, n] * off_cost
+            """ 总成本 """
+            cost += cs[k, 0] * local_cost + cs[k, n] * off_cost
 
         # TODO 不太会设计
         penalty = 0
 
         # 最终奖励为负的代价和惩罚
         reward = -(cost + penalty)
+        print(f"reward = {reward}")
         return reward
-        # return np.random.uniform(0, 10)
 
     def handler(self, cs, n):
         connected_iotds: list[Iotd] = []
@@ -194,8 +183,10 @@ class UAVEnv(gym.Env):
 
     def alloc_frequency(self, iotd, iotds: list[Iotd], t):
         total = 0
+        # print(f"len = {len(iotds)}")
         for i in range(len(iotds)):
             total += np.sqrt(self.uav.cycle_bit * iotds[i].compute_task[t])
+        # print(f"total = {total}")
         f_star = self.uav.fnmax * np.sqrt(self.uav.cycle_bit * iotd.compute_task[t]) / total
 
         return f_star
@@ -210,6 +201,40 @@ class UAVEnv(gym.Env):
         # 可视化环境状态，例如显示UAV的位置等
         pass
 
+
+""" 毫米波通信求信道增益
+                c, gt, gr, f, h, ka_f = 3e8, 55, 55, 60e9, 100, 1
+                psi1 = g1 * v * (g2 * v + g3)
+                ome1 = (g4 * v + g5) ** 2
+                psi2 = g5 * v * (g6 * v + g7)
+                ome2 = (g8 * v + g9) ** 2
+                phi1 = psi1 / (ome1 + (f / (100 * c) - c1) ** 2)
+                phi2 = psi2 / (ome2 + (f / (100 * c) - c2) ** 2)
+                phi3 = p1 * (f ** 3) + p2 * (f ** 2) + p3 * f + p4
+                kalpha = phi1 + phi2 + phi3
+                # TODO 到时候迁移到moc中 可能对当前uav的state会有影响 也就是uav的位置是不是实时在环境中更新 or 何处更新
+                uav_position = self.state.reshape(self.num_uavs, 2)[n]
+                iot_position = self.iotd_positions.reshape(self.nums_iotds, 2)[k]
+                # if not k:
+                #     print(f"uav pos: {uav_position}")
+                #     print(f"iotd pos: {iot_position}")
+                dgi_u = np.linalg.norm(np.array(iot_position) - np.array(uav_position))
+                di_u = np.sqrt(dgi_u ** 2 + h ** 2)
+                propagation_loss = c * np.sqrt(gt * gr) / (4 * np.pi * f * di_u)
+                # print(f"propagation_loss = {propagation_loss}")
+                molecular_absorption = np.exp(-0.5 * ka_f * di_u)
+                # hk_n_l_t
+                path_loss = propagation_loss * molecular_absorption
+
+                multipath_fading = 1
+
+                # 还没仔细研究计算公式
+                l, r, rm = 0.5, 0.35, 0.55
+                zeta = np.sqrt(np.pi) * r / np.sqrt(2) * rm
+                p0 = erf(zeta) ** 2
+                rq = np.sqrt(np.pi) * erf(zeta) * rm * rm / (2 * zeta * np.exp(-zeta * zeta))
+                misalignment_fade = p0 * np.exp((-2 * l * l) / (rq * rq))
+"""
 
 # this = UAVEnv()
 # print(this._calculate_reward(1))

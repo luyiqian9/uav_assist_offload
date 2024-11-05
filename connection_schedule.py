@@ -21,13 +21,14 @@ def calculate_distance(iotd_pos, uav_pos):
 def pop_low_priority(l):
     LU[l] = sorted(LU[l], key=lambda x: (x[1], x[2]))  # 按优先级排序
     removed_task = LU[l].pop(0)
-    m = removed_task[0]  # 获取移除任务的编号
+    m = removed_task[0]  # 获取移除 iotd 的编号
     ci[m, l] = 0
     ci[m, 0] = 1
 
 
 # 连接调度算法
-def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
+def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax,
+                        iotds, t):
 
     global ci, MI, LU
     ci, MI, LU = initialize(K, N)
@@ -39,7 +40,7 @@ def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
     # 遍历每个IoTD设备
     for i in range(K):
         LI = []  # 当前 iotd 被多少个 uav 覆盖
-
+        iotd = iotds[i]
         # 遍历每个UAV
         for j in range(1, N + 1):
             # print(str(i) + " " + str(j - 1))
@@ -52,9 +53,9 @@ def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
         # 如果仅有一个UAV覆盖IoTD
         if len(LI) == 1:
             l = LI[0][0]
-            LU[l].append((i, 0, 0))  # uav当前的连接任务列表 0，0模拟设备优先级Pi和任务数据量Di(t)
+            LU[l].append((i, iotd.dop, iotd.compute_task[t]))  # uav当前的连接任务列表 0，0模拟设备优先级Pi和任务数据量Di(t)
             ci[i, 0] = 0  # 第零列值为0 表示当前 IoTD 不再执行本地计算
-            ci[i, l] = 1  # 值为1 表示当前 iotd 已连接上编号为 l 的 uav
+            ci[i, l] = 1  # 值为 1 表示当前 iotd 已连接上编号为 l 的 uav
 
             # 如果UAV负载超出最大容量，移除优先级低的任务
             if len(LU[l]) > Cmax:
@@ -65,7 +66,7 @@ def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
 
     # 处理多UAV覆盖的IoTD
     # TODO 会不会出现做完循环之后 还有 iotd 是在本地计算
-    for i in MI:
+    for i in MI.keys():    # 遍历字典的 key  也就是 iotd 编号
         # 找到所有任务负载最少的 UAV 编号
         min_load = min(len(LU[x[0]]) for x in MI[i])  # 找到最小负载值
         candidate_uavs = [x for x in MI[i] if len(LU[x[0]]) == min_load]  # 找到负载最少的UAV列表
@@ -77,7 +78,7 @@ def connection_schedule(K, N, iotd_positions, uav_positions, dlink, Cmax):
             j = candidate_uavs[0][0]  # 如果只有一个UAV，直接选择
 
         # 将 IoTD 任务分配给 UAV j
-        LU[j].append((i, 0, 0))  # 模拟Pi和Di(t)
+        LU[j].append((i, iotds[i].dop, iotds[i].compute_task[t]))  # 模拟Pi和Di(t)
         ci[i, 0] = 0  # 更新连接矩阵，表示不再进行本地计算
         ci[i, j] = 1  # 将IoTD连接到UAV j
 
