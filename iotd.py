@@ -21,6 +21,9 @@ class Iotd:
 
         self.fkmax = fkmax  # 2.5GHz
 
+        # 初始化一下
+        self.init()
+
     def get_t_star(self, t):
         t_star = 0
         # print(f"task size = {self.compute_task[t]}")
@@ -45,3 +48,6 @@ class Iotd:
             task_size = np.random.randint(1200, 1600)  # 单位 kb
             # print(f"task size: {task_size}")
             self.compute_task.append(task_size)
+
+    def init(self):
+        pass

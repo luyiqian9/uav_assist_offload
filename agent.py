@@ -41,6 +41,10 @@ class Actor(nn.Module):
 
         # 计算 tanh 变换后分布的对数概率密度
         log_prob = log_prob - torch.log(1 - torch.tanh(action).pow(2) + 1e-7)
+
+        # 求和得到整体 log_prob
+        log_prob = log_prob.sum(dim=-1, keepdim=True)
+        # print(f"log_prob shape = {log_prob.shape}")
         action = action * self.action_bound  # 将动作缩放到指定范围内
 
         return action, log_prob
@@ -63,6 +67,8 @@ class Critic(nn.Module):
         # 在 update 中使用时 已经转换过张量格式了
         # state = state.unsqueeze(0)  # 将 (8,) 变成 (1, 8) 即(batch_size, state_dim)格式
         # action = action.unsqueeze(0)  # 将 (8,) 变成 (1, 8)
+        # print("state shape:", state.shape)
+        # print("action shape:", action.shape)
         # 将状态和动作在维度1上拼接，形成联合输入
         cat = torch.cat([state, action], dim=1)
         # 通过全连接层并逐层进行ReLU激活
@@ -80,12 +86,15 @@ class ReplayBuffer:
         self.buffer = collections.deque(maxlen=capacity)  # 缓冲区初始化为空列表
 
     def add(self, state, action, reward, next_state):
+        # print(f"added action = {action}")
         self.buffer.append((state, action, reward, next_state))  # 如果未达到最大容量，则添加新经验
 
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)         # 随机抽取批次个样本元组
         # 将batch列表解压生成多个元组列表 每个元组的第一个元素打包成state 第二个元素打包成action 依此类推
         states, actions, rewards, next_states = zip(*batch)
+        # print(f"states = {states}")
+        # print(f"actions = {actions}")
         return np.array(states), np.array(actions), np.array(rewards), np.array(next_states)
 
     def size(self):
@@ -133,7 +142,8 @@ class SACAgent:
         # 将状态转换为张量，并添加批次维度 即(1, state_dim) 便于适配学习模型
         state = torch.tensor([state], dtype=torch.float32).to(self.device)
 
-        action = self.actor(state)[0]  # 使用策略网络生成动作，并转换为 numpy 数组
+        action = self.actor(state)[0]  # 使用策略网络生成动作
+        # print(f"action = {action}")
         action = action.detach().cpu().numpy()   # 将 action 转成 numpy 数组，方便后续与 NumPy 库进行兼容的操作
         # print(f"selected action = {action}")
         return action
@@ -141,15 +151,20 @@ class SACAgent:
     # def calc_target(self, rewards, next_states, dones):  # 计算目标Q值
     def calc_target(self, rewards, next_states):  # 计算目标Q值
         next_actions, log_prob = self.actor(next_states)
+        # print(f"log_prob shape = {log_prob.shape}")
 
         # 计算策略熵，用于增强策略的探索性
         entropy = -log_prob
+        # print(f"entropy shape = {entropy.shape}")
+        # print(f"rewards shape = {rewards.shape}")
 
         # 选择两个 Q 值中的较小值，符合双 Q 学习的策略，避免过高估计
         q1_value = self.target_critic1(next_states, next_actions)
         q2_value = self.target_critic2(next_states, next_actions)
+        # print(f"q1_value shape = {q1_value.shape}")
         next_value = torch.min(q1_value,
                                q2_value) + self.log_alpha.exp() * entropy
+        # print(f"next_value shape = {next_value.shape}")
 
         # 计算目标 TD 值：reward + γ * (未来状态的值) * (1 - done)
         # td_target = rewards + self.gamma * next_value * (1 - dones)
@@ -171,7 +186,7 @@ class SACAgent:
         states = torch.tensor(transition_dict['states'],
                               dtype=torch.float32).to(self.device)
         actions = torch.tensor(transition_dict['actions'],
-                               dtype=torch.float32).view(-1, 1).to(self.device)
+                               dtype=torch.float32).view(-1, 8).to(self.device)
         rewards = torch.tensor(transition_dict['rewards'],
                                dtype=torch.float32).view(-1, 1).to(self.device)
         next_states = torch.tensor(transition_dict['next_states'],
@@ -182,6 +197,7 @@ class SACAgent:
         # 计算目标Q值(td_target) 和 预测Q值 之间的损失  然后根据损失来更新网络参数
         # td_target = self.calc_target(rewards, next_states, dones)
         td_target = self.calc_target(rewards, next_states)
+        # print(f"td_target shape = {td_target.shape}")
 
         current_q1 = self.critic1(states, actions)   # 计算当前状态和动作对应的 预测 Q1 值
         current_q2 = self.critic2(states, actions)   # 预测 Q2 值 (batch_size, 1)
@@ -220,8 +236,14 @@ class SACAgent:
         self.actor_optimizer.step()                            # 更新策略网络参数
 
         # 更新 alpha 值
+        # entropy 表示策略生成动作的熵（随机性） target_entropy 是设定的目标熵值
+        # 目标是让 entropy 接近 target_entropy，从而使策略具有适度的探索性
         alpha_loss = torch.mean(
             (entropy - self.target_entropy).detach() * self.log_alpha.exp())
+        # 使用detach函数 阻止entropy对alpha产生梯度传递 仅用它的值来计算alpha_loss
+        # 这样可以让 log_alpha 的更新独立于 actor 网络的参数。
+
+        # 根据策略的熵和目标熵的差距来动态调整 alpha 值，以控制策略的随机性（探索）
         self.log_alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.log_alpha_optimizer.step()

@@ -60,7 +60,8 @@ class UAVEnv(gym.Env):
         size = self.nums_iotds * 2
         self.iotd_positions = np.random.uniform(low=0, high=100, size=size).astype(np.float32)
         # print(f"init iotd_positions: {self.iotd_positions}")
-        iotd_dops = np.random.randint(1, 55, self.nums_iotds).tolist()
+        iotd_dops = [1] * 2 + [2] * 3 + [3] * 5
+        np.random.shuffle(iotd_dops)
 
         # print(f"init_state steps: {self.max_time_steps}")
         for i in range(self.nums_iotds):
@@ -92,10 +93,14 @@ class UAVEnv(gym.Env):
 
     def _update_state(self, action):
         # 当前状态：每个UAV的位置 [x1, y1, x2, y2, ..., xn, yn]
+        # print(f"update_action = {action}")
+        # print(f"update_state = {self.state}")
         positions = self.state.reshape(self.num_uavs, 2)
+        # print(f"update_position = {positions}")
 
         # 动作：每个UAV的角度和速度增量 [Δθ1, Δv1, Δθ2, Δv2, ..., Δθn, Δvn]
         actions = action.reshape(self.num_uavs, 2)
+        # print(f"update_action = {actions}")
 
         # 计算新的位置
         positions: np.ndarray = self.uav.calculate_new_position(self.num_uavs, actions, positions, self.time_slot_size,
@@ -171,7 +176,7 @@ class UAVEnv(gym.Env):
 
         # 最终奖励为负的代价和惩罚
         reward = -(cost + penalty)
-        print(f"reward = {reward}")
+        # print(f"reward = {reward}")
         return reward
 
     def handler(self, cs, n):
